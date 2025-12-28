@@ -66,6 +66,91 @@ async function apiJson(path, opts) {
   return { ok: res.ok && data?.ok !== false, status: res.status, data };
 }
 
+
+function TargetPicker({ placeholder, items, value, onChange, onPick, onCreate }) {
+  const [open, setOpen] = React.useState(false);
+  const [focusIdx, setFocusIdx] = React.useState(0);
+
+  const q = String(value || "").trim().replace(/^@+/, "").replace(/^#/, "").toLowerCase();
+
+  const filtered = React.useMemo(() => {
+    if (!q) return items.slice(0, 8);
+    return items
+      .filter((it) => it.key.toLowerCase().includes(q) || it.label.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [q, items]);
+
+  function commitPick(it) {
+    setOpen(false);
+    onPick(it.key);
+  }
+
+  function handleKeyDown(e) {
+    if (!open && (e.key === "ArrowDown" || e.key === "Enter")) setOpen(true);
+    if (!open) return;
+
+    if (e.key === "ArrowDown") { e.preventDefault(); setFocusIdx((i) => Math.min(i + 1, filtered.length - 1)); }
+    if (e.key === "ArrowUp") { e.preventDefault(); setFocusIdx((i) => Math.max(i - 1, 0)); }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const it = filtered[focusIdx];
+      if (it) commitPick(it);
+      else if (onCreate) onCreate(value);
+    }
+    if (e.key === "Escape") setOpen(false);
+  }
+
+  return (
+    <div className="relative">
+      <div className="flex gap-2">
+        <input
+          value={value}
+          onChange={(e) => { onChange(e.target.value); setOpen(true); setFocusIdx(0); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 120)}
+          onKeyDown={handleKeyDown}
+          className="flex-1 px-3 py-2 rounded-lg border"
+          placeholder={placeholder}
+        />
+        {onCreate && (
+          <button
+            type="button"
+            onClick={() => onCreate(value)}
+            className="px-3 py-2 rounded-lg border bg-gray-100 hover:bg-gray-200 font-semibold text-sm"
+            title="Créer une cible démo interne"
+          >
+            + Demo
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <div className="absolute z-10 mt-1 w-full bg-white border rounded-lg shadow-lg overflow-hidden">
+          {filtered.length === 0 ? (
+            <div className="p-3 text-sm text-gray-600">
+              Aucun match interne. Appuie sur <span className="font-semibold">Entrée</span> ou <span className="font-semibold">+ Demo</span> pour créer une cible démo.
+            </div>
+          ) : (
+            filtered.map((it, i) => (
+              <button
+                type="button"
+                key={it.key}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => commitPick(it)}
+                className={`w-full text-left px-3 py-2 hover:bg-gray-50 ${i === focusIdx ? "bg-gray-50" : ""}`}
+              >
+                <div className="text-sm font-semibold">{it.label}</div>
+                {it.sub && <div className="text-xs text-gray-500">{it.sub}</div>}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 export default function Lab() {
   const [tab, setTab] = useState("feed");
 
@@ -509,6 +594,27 @@ export default function Lab() {
   const [campaigns, setCampaigns] = useState([]);
   const [campaignError, setCampaignError] = useState(null);
 
+  async function createDemoAccount(raw) {
+    const username = String(raw || "").trim().replace(/^@+/, "");
+    const r = await apiJson("/api/catalog/accounts", { method: "POST", body: JSON.stringify({ username }) });
+    if (!r.ok) return null;
+    return r.data.account;
+  }
+
+  async function createDemoVideo(raw) {
+    const s = String(raw || "").trim();
+    let title = s || "Démo vidéo";
+    let author = "sim_student";
+    if (s.includes("|")) {
+      const parts = s.split("|");
+      title = (parts[0] || title).trim();
+      author = (parts[1] || author).trim().replace(/^@+/, "");
+    }
+    const r = await apiJson("/api/catalog/videos", { method: "POST", body: JSON.stringify({ title, author, durationSec: 18 }) });
+    if (!r.ok) return null;
+    return r.data.video;
+  }
+
   async function refreshCampaigns() {
     const r = await apiJson("/api/campaigns");
     if (r.ok) setCampaigns(r.data.campaigns || []);
@@ -778,31 +884,59 @@ export default function Lab() {
                     </div>
 
                     <div className="mt-4">
-                      <div className="font-bold mb-2">2) Sélectionner la cible (interne)</div>
-                      {growthService === "followers" ? (
-                        <select
-                          value={targetAccount}
-                          onChange={(e) => setTargetAccount(e.target.value)}
-                          className="w-full px-3 py-2 rounded-lg border"
-                        >
-                          {catalog.accounts.map((a) => (
-                            <option key={a.id} value={a.username}>@{a.username}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <select
-                          value={targetVideoId}
-                          onChange={(e) => setTargetVideoId(parseInt(e.target.value, 10))}
-                          className="w-full px-3 py-2 rounded-lg border"
-                        >
-                          {catalog.videos.map((v) => (
-                            <option key={v.id} value={v.id}>#{v.id} — {v.title} (@{v.author})</option>
-                          ))}
-                        </select>
-                      )}
+                      <div className="font-bold mb-2">2) Cible (champ unique, interne)</div>
 
-                      <div className="mt-4">
-                        <div className="font-bold mb-2">3) Choisir un package (sim)</div>
+                      {growthService === "followers" ? (
+                        <div className="space-y-2">
+                          <div className="text-xs text-gray-500">
+                            Tape un @username. Seuls les comptes internes sont acceptés (auto-suggestions).
+                          </div>
+                          <TargetPicker
+                            placeholder="@target_account"
+                            items={catalog.accounts.map((a) => ({ key: a.username, label: `@${a.username}`, sub: `${a.followers.toLocaleString()} followers` }))}
+                            value={targetAccountInput}
+                            onChange={setTargetAccountInput}
+                            onPick={(val) => setTargetAccount(val)}
+                            onCreate={async (raw) => {
+                              const created = await createDemoAccount(raw);
+                              if (created) {
+                                setTargetAccount(created.username);
+                                setTargetAccountInput(`@${created.username}`);
+                              }
+                            }}
+                          />
+                          <div className="text-xs text-gray-500">
+                            Sélection actuelle: <span className="font-semibold">@{targetAccount}</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="text-xs text-gray-500">
+                            Tape un ID vidéo (ex: 101) ou cherche par titre. Seules les vidéos internes sont acceptées.
+                          </div>
+                          <TargetPicker
+                            placeholder="#101"
+                            items={catalog.videos.map((v) => ({ key: String(v.id), label: `#${v.id} — ${v.title}`, sub: `@${v.author}` }))}
+                            value={targetVideoInput}
+                            onChange={setTargetVideoInput}
+                            onPick={(val) => setTargetVideoId(parseInt(val, 10))}
+                            onCreate={async (raw) => {
+                              const created = await createDemoVideo(raw);
+                              if (created) {
+                                setTargetVideoId(created.id);
+                                setTargetVideoInput(String(created.id));
+                              }
+                            }}
+                          />
+                          <div className="text-xs text-gray-500">
+                            Sélection actuelle: <span className="font-semibold">video #{targetVideoId}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-4">
+                      <div className="font-bold mb-2">3) Choisir un package (sim)</div>
                         <div className="grid grid-cols-4 gap-2">
                           {amountOptions.map((a) => (
                             <button

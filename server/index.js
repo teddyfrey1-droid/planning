@@ -27,6 +27,22 @@ const catalog = {
   ]
 };
 
+let nextAccountId = Math.max(0, ...catalog.accounts.map(a => a.id)) + 1;
+let nextVideoId = Math.max(0, ...catalog.videos.map(v => v.id)) + 1;
+
+function sanitizeSimUsername(input) {
+  const raw = String(input || "").trim().replace(/^@+/, "");
+  const cleaned = raw.toLowerCase().replace(/[^a-z0-9_\.]/g, "").slice(0, 20);
+  if (!cleaned) return null;
+  return cleaned.startsWith("sim_") ? cleaned : `sim_${cleaned}`;
+}
+
+function sanitizeTitle(input) {
+  const t = String(input || "").trim();
+  return t.slice(0, 60) || "Untitled";
+}
+
+
 // -------------------- Growth campaign simulation --------------------
 const SERVICES = ["followers", "likes", "views", "shares"];
 const AMOUNTS = {
@@ -123,6 +139,47 @@ function scheduleCampaign(campaign) {
 
   campaign._timer = interval;
 }
+
+
+// -------------------- Catalog management (simulation only) --------------------
+app.post("/api/catalog/accounts", (req, res) => {
+  const username = sanitizeSimUsername(req.body?.username);
+  if (!username) return res.status(400).json({ ok: false, error: "bad_username" });
+  if (catalogHasAccount(username)) return res.status(409).json({ ok: false, error: "exists" });
+
+  const acc = {
+    id: nextAccountId++,
+    username,
+    followers: Number(req.body?.followers ?? 0) || 0,
+    following: Number(req.body?.following ?? 0) || 0
+  };
+  catalog.accounts.push(acc);
+  res.json({ ok: true, account: acc });
+});
+
+app.post("/api/catalog/videos", (req, res) => {
+  const author = sanitizeSimUsername(req.body?.author);
+  if (!author) return res.status(400).json({ ok: false, error: "bad_author" });
+
+  if (!catalogHasAccount(author)) {
+    const acc = { id: nextAccountId++, username: author, followers: 0, following: 0 };
+    catalog.accounts.push(acc);
+  }
+
+  const vid = {
+    id: nextVideoId++,
+    author,
+    title: sanitizeTitle(req.body?.title),
+    views: Number(req.body?.views ?? 0) || 0,
+    likes: Number(req.body?.likes ?? 0) || 0,
+    shares: Number(req.body?.shares ?? 0) || 0,
+    durationSec: Math.max(5, Math.min(60, Number(req.body?.durationSec ?? 18) || 18)),
+    createdAt: Date.now()
+  };
+  catalog.videos.push(vid);
+  res.json({ ok: true, video: vid });
+});
+
 
 // -------------------- API --------------------
 app.get("/api/health", (req, res) => {

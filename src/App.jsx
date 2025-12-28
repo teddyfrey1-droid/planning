@@ -1,6 +1,6 @@
 import React from "react";
-import FakeTokLab from "./FakeTokLab.jsx";
+import Lab from "./Lab.jsx";
 
 export default function App() {
-  return <FakeTokLab />;
+  return <Lab />;
 }

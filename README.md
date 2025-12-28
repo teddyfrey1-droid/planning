@@ -1,26 +1,27 @@
-# FakeTokLab — Render Web Service (Express + Vite)
+# Engagement Lab — Web Service (Render)
 
-Ce repo est **100% offline / simulation** : aucune connexion à TikTok ou autre plateforme.
+Objectif : **simulation pédagogique** (offline) d’un écosystème “growth platform” + “réseau social” fictif.
+- Aucune interaction avec TikTok (ou autre) : **pas d’API externe, pas de scraping, pas de ciblage de handles réels**.
+- Les “cibles” sont **uniquement** des comptes/vidéos **internes** au lab (sélection par liste).
 
 ## Déploiement Render (Web Service)
-1. Push ce repo sur GitHub
-2. Render → New → **Web Service** → Connect repo
-3. Settings :
-   - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm start`
-
-Le serveur Express écoute sur `process.env.PORT` (compatible Render).
+- Build: `npm install && npm run build`
+- Start: `npm start`
 
 ## Local
 ```bash
 npm install
 npm run dev
-# puis ouvre http://localhost:5173
 ```
 
-## Endpoints serveur
-- `GET /api/health` → healthcheck
+## API (serveur)
+- `GET /api/health`
+- `GET /api/catalog` : comptes/vidéos internes (lecture)
+- `POST /api/campaigns` : créer une campagne (service + target + amount)
+- `GET /api/campaigns` : liste
+- `GET /api/campaigns/:id` : détails
 
-## Notes
-- Tailwind config en `tailwind.config.cjs` pour éviter les problèmes ESM.
-- Toute la logique du lab est côté client (simulation). Si tu veux du “prof-only”, on peut migrer une partie côté API.
+## Notes pédagogiques
+- Cooldown “perks” simulé (par utilisateur/service)
+- “Delivery” simulée (progression aléatoire, durées variables)
+- UI inspirée de patterns de plateformes de “growth”, **sans reproduction à l’identique**.

@@ -9,37 +9,224 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(compression());
+app.use(express.json({ limit: "200kb" }));
 
-// Healthcheck
+// -------------------- Catalog (internal-only targets) --------------------
+const seedTs = Date.now();
+const catalog = {
+  accounts: [
+    { id: 1, username: "user_alice", followers: 1250, following: 180 },
+    { id: 2, username: "user_bob", followers: 890, following: 220 },
+    { id: 3, username: "target_account", followers: 5420, following: 35 }
+  ],
+  videos: [
+    { id: 101, author: "target_account", title: "Ma première vidéo", views: 12500, likes: 890, shares: 44, durationSec: 18, createdAt: seedTs - 1000 * 60 * 60 * 24 * 10 },
+    { id: 102, author: "target_account", title: "Tutoriel danse", views: 8900, likes: 654, shares: 33, durationSec: 24, createdAt: seedTs - 1000 * 60 * 60 * 24 * 2 },
+    { id: 103, author: "user_alice", title: "Recette rapide 🍜", views: 4200, likes: 310, shares: 12, durationSec: 15, createdAt: seedTs - 1000 * 60 * 60 * 24 * 5 },
+    { id: 104, author: "user_bob", title: "Astuce productivité ⏱️", views: 2500, likes: 220, shares: 9, durationSec: 20, createdAt: seedTs - 1000 * 60 * 60 * 24 * 1 }
+  ]
+};
+
+// -------------------- Growth campaign simulation --------------------
+const SERVICES = ["followers", "likes", "views", "shares"];
+const AMOUNTS = {
+  followers: [10, 25, 50, 100],
+  likes: [20, 50, 100, 250],
+  views: [100, 250, 500, 1000],
+  shares: [5, 10, 25, 50]
+};
+
+// cooldown simulation ("new perks every 10 minutes") - kept configurable
+const COOLDOWN_MS = 10 * 60 * 1000;
+
+const state = {
+  campaigns: new Map(), // id -> campaign
+  cooldowns: new Map()  // key user|service -> ts when allowed
+};
+
+function rand(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+function makeId(prefix = "cmp") {
+  return `${prefix}_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+}
+
+function catalogHasAccount(username) {
+  return catalog.accounts.some((a) => a.username === username);
+}
+
+function catalogHasVideoId(videoId) {
+  return catalog.videos.some((v) => v.id === videoId);
+}
+
+function applyDelivery(c) {
+  // Apply to internal catalog counters (simulation only)
+  if (c.service === "followers") {
+    const acc = catalog.accounts.find((a) => a.username === c.target.username);
+    if (acc) acc.followers += c.lastDelta || 0;
+  } else {
+    const v = catalog.videos.find((x) => x.id === c.target.videoId);
+    if (v) {
+      if (c.service === "likes") v.likes += c.lastDelta || 0;
+      if (c.service === "views") v.views += c.lastDelta || 0;
+      if (c.service === "shares") v.shares += c.lastDelta || 0;
+    }
+  }
+}
+
+function scheduleCampaign(campaign) {
+  // Delivery time: variable, can be "up to 24h" in UI; here compressed for demo.
+  // We simulate variability with random step sizes + random intervals.
+  const start = Date.now();
+  campaign.status = "running";
+  campaign.startedAt = start;
+  campaign.logs.push({ ts: start, msg: "Campaign started (simulation)." });
+
+  const interval = setInterval(() => {
+    if (campaign.status !== "running") return;
+
+    // Stop conditions
+    if (campaign.delivered >= campaign.amount) {
+      campaign.status = "completed";
+      campaign.completedAt = Date.now();
+      campaign.logs.push({ ts: campaign.completedAt, msg: "Campaign completed (simulation)." });
+      clearInterval(interval);
+      return;
+    }
+
+    // Step size: diminishing returns as it approaches the end
+    const remaining = campaign.amount - campaign.delivered;
+    const baseStep = campaign.service === "views" ? rand(10, 60) : rand(1, 12);
+    const step = Math.max(1, Math.min(remaining, Math.round(baseStep * rand(0.6, 1.2))));
+
+    campaign.lastDelta = step;
+    campaign.delivered += step;
+    campaign.updatedAt = Date.now();
+
+    applyDelivery(campaign);
+
+    // Log occasionally
+    if (Math.random() < 0.35) {
+      campaign.logs.push({
+        ts: campaign.updatedAt,
+        msg: `Delivered +${step} (${campaign.delivered}/${campaign.amount})`
+      });
+      campaign.logs = campaign.logs.slice(-60);
+    }
+
+    // Random throttling: simulate burst + quiet windows
+    if (Math.random() < 0.08) {
+      campaign.logs.push({ ts: Date.now(), msg: "Throttling window (simulation)..." });
+    }
+  }, 900);
+
+  campaign._timer = interval;
+}
+
+// -------------------- API --------------------
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
 
-// Vite build output
+app.get("/api/catalog", (req, res) => {
+  res.json({ ok: true, catalog });
+});
+
+app.get("/api/campaigns", (req, res) => {
+  const all = Array.from(state.campaigns.values())
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .slice(0, 200);
+  res.json({ ok: true, campaigns: all });
+});
+
+app.get("/api/campaigns/:id", (req, res) => {
+  const c = state.campaigns.get(req.params.id);
+  if (!c) return res.status(404).json({ ok: false, error: "not_found" });
+  res.json({ ok: true, campaign: c });
+});
+
+app.post("/api/campaigns", (req, res) => {
+  const { actor = "anonymous", service, target, amount } = req.body || {};
+
+  if (!SERVICES.includes(service)) {
+    return res.status(400).json({ ok: false, error: "bad_service" });
+  }
+
+  const allowedAmounts = AMOUNTS[service] || [];
+  if (!allowedAmounts.includes(Number(amount))) {
+    return res.status(400).json({ ok: false, error: "bad_amount", allowed: allowedAmounts });
+  }
+
+  // Enforce internal-only targets
+  if (service === "followers") {
+    const username = String(target?.username || "");
+    if (!catalogHasAccount(username)) {
+      return res.status(400).json({ ok: false, error: "invalid_target_account" });
+    }
+  } else {
+    const videoId = Number(target?.videoId);
+    if (!catalogHasVideoId(videoId)) {
+      return res.status(400).json({ ok: false, error: "invalid_target_video" });
+    }
+  }
+
+  // Cooldown per actor/service
+  const key = `${actor}|${service}`;
+  const allowAt = state.cooldowns.get(key) || 0;
+  const t = Date.now();
+  if (t < allowAt) {
+    return res.status(429).json({
+      ok: false,
+      error: "cooldown",
+      retryAfterMs: allowAt - t
+    });
+  }
+  state.cooldowns.set(key, t + COOLDOWN_MS);
+
+  const id = makeId("cmp");
+  const campaign = {
+    id,
+    actor,
+    service,
+    amount: Number(amount),
+    delivered: 0,
+    status: "queued",
+    createdAt: t,
+    updatedAt: t,
+    startedAt: null,
+    completedAt: null,
+    target:
+      service === "followers"
+        ? { kind: "account", username: target.username }
+        : { kind: "video", videoId: Number(target.videoId) },
+    logs: [{ ts: t, msg: "Campaign queued (simulation)." }],
+    lastDelta: 0
+  };
+
+  state.campaigns.set(id, campaign);
+
+  // Start after small delay to mimic queueing
+  setTimeout(() => scheduleCampaign(campaign), Math.round(rand(600, 1600)));
+
+  res.json({ ok: true, campaign, cooldownMs: COOLDOWN_MS });
+});
+
+// -------------------- Static hosting (Vite dist) --------------------
 const distPath = path.resolve(__dirname, "..", "dist");
 const indexHtml = path.join(distPath, "index.html");
 
-if (!fs.existsSync(distPath)) {
-  console.warn(
-    "[WARN] dist/ introuvable. En prod, assure-toi que Render exécute `npm run build`."
-  );
-}
-
 app.use(express.static(distPath, { maxAge: "1d", etag: true }));
 
-// SPA fallback
 app.get("*", (req, res) => {
   if (!fs.existsSync(indexHtml)) {
-    res
-      .status(500)
-      .send("Build manquant: dist/index.html introuvable. Lance `npm run build`.");
+    res.status(500).send("Build manquant: dist/index.html introuvable. Lance `npm run build`.");
     return;
   }
   res.sendFile(indexHtml);
 });
 
-// Render listens on process.env.PORT
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`FakeTokLab Web Service listening on port ${PORT}`);
+  console.log(`Engagement Lab Web Service listening on port ${PORT}`);
 });

@@ -133,6 +133,31 @@ app.get("/api/catalog", (req, res) => {
   res.json({ ok: true, catalog });
 });
 
+// Increment internal engagement counters (simulation only; internal catalog targets)
+app.post("/api/engagement", (req, res) => {
+  const { action, videoId, username, delta } = req.body || {};
+  const d = Number(delta || 1);
+
+  if (action === "follow") {
+    const u = String(username || "");
+    const acc = catalog.accounts.find((a) => a.username === u);
+    if (!acc) return res.status(400).json({ ok: false, error: "invalid_target_account" });
+    acc.followers += Math.max(0, d);
+    return res.json({ ok: true, catalog });
+  }
+
+  const vid = catalog.videos.find((v) => v.id === Number(videoId));
+  if (!vid) return res.status(400).json({ ok: false, error: "invalid_target_video" });
+
+  if (action === "view") vid.views += Math.max(0, d);
+  else if (action === "like") vid.likes += Math.max(0, d);
+  else if (action === "share") vid.shares += Math.max(0, d);
+  else return res.status(400).json({ ok: false, error: "bad_action" });
+
+  return res.json({ ok: true, catalog });
+});
+
+
 app.get("/api/campaigns", (req, res) => {
   const all = Array.from(state.campaigns.values())
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
@@ -212,6 +237,29 @@ app.post("/api/campaigns", (req, res) => {
   res.json({ ok: true, campaign, cooldownMs: COOLDOWN_MS });
 });
 
+
+// -------------------- Interaction events (view/like/share) --------------------
+app.post("/api/events", (req, res) => {
+  const { actor = "anonymous", type, videoId } = req.body || {};
+  const vid = Number(videoId);
+
+  if (!["view", "like", "share"].includes(type)) {
+    return res.status(400).json({ ok: false, error: "bad_event_type" });
+  }
+  if (!catalogHasVideoId(vid)) {
+    return res.status(400).json({ ok: false, error: "invalid_video" });
+  }
+
+  const v = catalog.videos.find((x) => x.id === vid);
+  if (!v) return res.status(400).json({ ok: false, error: "invalid_video" });
+
+  if (type === "view") v.views += 1;
+  if (type === "like") v.likes += 1;
+  if (type === "share") v.shares += 1;
+
+  const ts = Date.now();
+  res.json({ ok: true, ts, actor, type, videoId: vid, snapshot: { views: v.views, likes: v.likes, shares: v.shares } });
+});
 // -------------------- Static hosting (Vite dist) --------------------
 const distPath = path.resolve(__dirname, "..", "dist");
 const indexHtml = path.join(distPath, "index.html");

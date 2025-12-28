@@ -74,13 +74,17 @@ export default function Lab() {
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   useEffect(() => {
     let mounted = true;
-    (async () => {
+
+    async function pull() {
       const r = await apiJson("/api/catalog");
       if (!mounted) return;
       if (r.ok) setCatalog(r.data.catalog);
       setCatalogLoaded(true);
-    })();
-    return () => { mounted = false; };
+    }
+
+    pull();
+    const t = setInterval(pull, 1000); // refresh counters / deliveries
+    return () => { mounted = false; clearInterval(t); };
   }, []);
 
   // ------------------ Mail provider sim (localStorage) ------------------
@@ -93,6 +97,8 @@ export default function Lab() {
   const mailMap = useMemo(() => new Map(mailAccounts.map((a) => [a.email, a])), [mailAccounts]);
 
   const [mailCreate, setMailCreate] = useState({ localPart: "student1", domain: "labmail.local", password: "mail1234" });
+  const [autoOtp, setAutoOtp] = useState(true);
+  const [autoVerifyOtp, setAutoVerifyOtp] = useState(true);
   const [mailLogin, setMailLogin] = useState({ email: "student1@labmail.local", password: "mail1234" });
   const [mailSession, setMailSession] = useState(null); // { email }
 
@@ -104,12 +110,39 @@ export default function Lab() {
     const pass = String(mailCreate.password || "");
     if (!isValidEmail(email) || pass.length < 4) return;
 
+    const code = otp6();
+    const t = now();
+    const msg = {
+      id: "msg_" + Math.random().toString(36).slice(2),
+      subject: "Lab — Code de vérification",
+      body: `Votre code OTP est : ${code}
+(Simulation offline)`,
+      otp: code,
+      sentAt: t
+    };
+
     setMailAccounts((prev) => {
       if (prev.some((x) => x.email === email)) return prev;
-      return [...prev, { email, passwordPlain: pass, createdAt: now(), inbox: [], verifiedAt: null, lastOtpSentAt: 0 }];
+      return [
+        ...prev,
+        {
+          email,
+          passwordPlain: pass,
+          createdAt: t,
+          inbox: autoOtp ? [msg] : [],
+          verifiedAt: autoVerifyOtp && autoOtp ? t : null,
+          lastOtpSentAt: autoOtp ? t : 0
+        }
+      ];
     });
+
     setMailLogin({ email, password: pass });
     setOtpEmail(email);
+
+    if (autoOtp) {
+      // Fill the OTP input automatically for the demo workflow
+      setOtpInput(code);
+    }
   }
 
   function loginMailbox() {
@@ -131,20 +164,32 @@ export default function Lab() {
     const email = normalizeEmail(otpEmail);
     if (!isValidEmail(email)) return;
 
-    setMailAccounts((prev) => prev.map((mb) => {
-      if (mb.email !== email) return mb;
-      const since = now() - (mb.lastOtpSentAt || 0);
-      if (since < 20000) return mb; // 1 OTP / 20s
-      const code = otp6();
-      const msg = {
-        id: "msg_" + Math.random().toString(36).slice(2),
-        subject: "Lab — Code de vérification",
-        body: `Votre code OTP est : ${code}\n(Simulation offline)`,
-        otp: code,
-        sentAt: now()
-      };
-      return { ...mb, lastOtpSentAt: now(), inbox: [msg, ...mb.inbox].slice(0, 30), verifiedAt: null };
-    }));
+    const t = now();
+    const code = otp6();
+    const msg = {
+      id: "msg_" + Math.random().toString(36).slice(2),
+      subject: "Lab — Code de vérification",
+      body: `Votre code OTP est : ${code}
+(Simulation offline)`,
+      otp: code,
+      sentAt: t
+    };
+
+    setMailAccounts((prev) =>
+      prev.map((mb) => {
+        if (mb.email !== email) return mb;
+        const since = t - (mb.lastOtpSentAt || 0);
+        if (since < 20000) return mb; // 1 OTP / 20s
+        return {
+          ...mb,
+          lastOtpSentAt: t,
+          inbox: [msg, ...mb.inbox].slice(0, 30),
+          verifiedAt: autoVerifyOtp ? t : null
+        };
+      })
+    );
+
+    if (autoOtp) setOtpInput(code);
   }
 
   function verifyOtp() {
@@ -265,10 +310,15 @@ export default function Lab() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [watchedMs, setWatchedMs] = useState(0);
-  const [loopEnabled, setLoopEnabled] = useState(true);
+  const [loopEnabled, setLoopEnabled] = useState(false);
   const [exploreEvery, setExploreEvery] = useState(6);
 
   const tickRef = useRef(null);
+  const viewDedupRef = useRef(new Set()); // key: username|videoId
+
+  const hasCountedViewRef = useRef(false);
+  const viewCountedAtMsRef = useRef(null);
+
   const lastTickRef = useRef(null);
   const loopCountRef = useRef(0);
 
@@ -326,6 +376,8 @@ export default function Lab() {
   useEffect(() => {
     setWatchedMs(0);
     loopCountRef.current = 0;
+    hasCountedViewRef.current = false;
+    viewCountedAtMsRef.current = null;
     if (autoplay) { setIsPlaying(true); lastTickRef.current = now(); }
     else { setIsPlaying(false); lastTickRef.current = null; }
   }, [activeVideo?.id, autoplay]);
@@ -370,12 +422,37 @@ export default function Lab() {
     if (loopEnabled) {
       loopCountRef.current += 1;
       setWatchedMs(0);
+      hasCountedViewRef.current = false;
+      viewCountedAtMsRef.current = null;
       if (autoplay) setTimeout(() => { setIsPlaying(true); lastTickRef.current = now(); }, 180);
       return;
     }
     if (autoplay) setTimeout(() => goNext(), 250);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchedMs, activeVideo?.id, isPlaying, autoplay, loopEnabled]);
+
+  // Count a "view" once per play when watch >= 2s (simulation)
+  useEffect(() => {
+    if (!activeVideo || !currentUser) return;
+    if (!isPlaying) return;
+    if (hasCountedViewRef.current) return;
+    if (watchedMs < 2000) return;
+
+    hasCountedViewRef.current = true;
+    viewCountedAtMsRef.current = watchedMs;
+
+    // Optimistic UI update (then server refresh will confirm)
+    setCatalog((prev) => ({
+      ...prev,
+      videos: (prev.videos || []).map((v) => (v.id === activeVideo.id ? { ...v, views: (v.views || 0) + 1 } : v))
+    }));
+
+    apiJson("/api/engagement", {
+      method: "POST",
+      body: JSON.stringify({ action: "view", videoId: activeVideo.id, delta: 1 })
+    }).catch(() => {});
+  }, [watchedMs, isPlaying, activeVideo?.id, currentUser?.username]);
+
 
   function togglePlay() {
     if (!activeVideo || !currentUser) return;
@@ -395,7 +472,20 @@ export default function Lab() {
     setActiveIndex((i) => Math.max(i - 1, 0));
   }
 
-  // ------------------ Growth platform simulation (server-backed) ------------------
+  
+  // Count a view (server-side) once per user/video when watch >= 2s
+  useEffect(() => {
+    if (!currentUser || !activeVideo) return;
+    if (watchedMs < 2000) return;
+    const key = `${currentUser.username}|${activeVideo.id}`;
+    if (viewDedupRef.current.has(key)) return;
+
+    viewDedupRef.current.add(key);
+    // Fire-and-forget; catalog polling will refresh counters shortly.
+    apiJson("/api/events", { method: "POST", body: JSON.stringify({ actor: currentUser.username, type: "view", videoId: activeVideo.id }) });
+  }, [watchedMs, currentUser?.username, activeVideo?.id]);
+
+// ------------------ Growth platform simulation (server-backed) ------------------
   const [growthService, setGrowthService] = useState("followers");
   const [growthAmount, setGrowthAmount] = useState(25);
   const [targetAccount, setTargetAccount] = useState("target_account");
@@ -831,6 +921,16 @@ export default function Lab() {
                 <div className="grid grid-cols-2 gap-6">
                   <div className="bg-white border rounded-lg p-4">
                     <div className="font-bold mb-3">Créer un compte mail</div>
+                    <div className="flex items-center gap-4 mb-3 text-sm">
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={autoOtp} onChange={(e)=>setAutoOtp(e.target.checked)} className="w-4 h-4" />
+                        <span className="font-semibold">Auto OTP</span>
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={autoVerifyOtp} onChange={(e)=>setAutoVerifyOtp(e.target.checked)} className="w-4 h-4" />
+                        <span className="font-semibold">Auto vérification</span>
+                      </label>
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       <input value={mailCreate.localPart} onChange={(e) => setMailCreate((p) => ({ ...p, localPart: e.target.value }))}
                         className="px-3 py-2 rounded-lg border" placeholder="local-part" />
